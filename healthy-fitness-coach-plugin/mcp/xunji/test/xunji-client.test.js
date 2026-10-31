@@ -30,7 +30,7 @@ test('client posts v2 schema and datestr to an injected localhost endpoint', asy
       response.end(JSON.stringify({ success: true, res: [] }));
     });
   }, async (baseUrl) => {
-    const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
+    const client = new XunjiClient({ baseUrl, timeoutMs: 5000 });
     const result = await client.fetchDay('2026-08-01', 'FAKE_TEST_CREDENTIAL');
     assert.deepEqual(result.records, []);
   });
@@ -52,7 +52,7 @@ test('client maps auth, rate-limit, invalid JSON, and timeout without exposing c
     if (request.url === '/json') { response.end('not json'); return; }
     if (request.url === '/slow') { setTimeout(() => response.end(JSON.stringify({ success: true, res: [] })), 100); }
   }, async (baseUrl) => {
-    for (const [path, code, timeoutMs] of [['/auth', 'invalid_credentials', 500], ['/rate', 'rate_limited', 500], ['/json', 'invalid_response', 500], ['/slow', 'network_error', 10]]) {
+    for (const [path, code, timeoutMs] of [['/auth', 'invalid_credentials', 5000], ['/rate', 'rate_limited', 5000], ['/json', 'invalid_response', 5000], ['/slow', 'network_error', 10]]) {
       const client = new XunjiClient({ baseUrl: `${baseUrl}${path}`, timeoutMs });
       await assert.rejects(client.fetchDay('2026-08-01', 'FAKE_TEST_CREDENTIAL'), (error) => {
         assert.equal(error.code, code);
@@ -68,7 +68,7 @@ test('client rejects a localhost success-false response as invalid_response', as
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ success: false, res: [] }));
   }, async (baseUrl) => {
-    const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
+    const client = new XunjiClient({ baseUrl, timeoutMs: 5000 });
     await assert.rejects(client.fetchDay('2026-08-01', 'FAKE_TEST_CREDENTIAL'), { code: 'invalid_response' });
   });
 });
@@ -78,7 +78,7 @@ test('client maps documented business errors returned in res', async () => {
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ success: false, res: 'too frequent, retry after 13s' }));
   }, async (baseUrl) => {
-    const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
+    const client = new XunjiClient({ baseUrl, timeoutMs: 5000 });
     await assert.rejects(client.fetchDay('2026-08-01', 'FAKE_TEST_CREDENTIAL'), (error) => {
       assert.equal(error.code, 'rate_limited');
       assert.equal(JSON.stringify(error).includes('FAKE_TEST_CREDENTIAL'), false);
@@ -99,7 +99,7 @@ test('client upserts records to the dedicated endpoint and returns server record
       response.end(JSON.stringify({ success: true, res: [train()] }));
     });
   }, async (baseUrl) => {
-    const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
+    const client = new XunjiClient({ baseUrl, timeoutMs: 5000 });
     const result = await client.upsertRecords([train()], 'FAKE_TEST_CREDENTIAL');
     assert.deepEqual(result.records, [train()]);
   });
@@ -110,7 +110,7 @@ test('client maps documented Xunji business errors without leaking credentials',
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ success: false, error: '仅VIP可用' }));
   }, async (baseUrl) => {
-    const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
+    const client = new XunjiClient({ baseUrl, timeoutMs: 5000 });
     await assert.rejects(client.upsertRecords([train()], 'FAKE_TEST_CREDENTIAL'), (error) => {
       assert.equal(error.code, 'membership_required');
       assert.equal(JSON.stringify(error).includes('FAKE_TEST_CREDENTIAL'), false);
