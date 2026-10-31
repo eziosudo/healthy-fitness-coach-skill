@@ -143,7 +143,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
       const credential = credentialOverride || await credentialProvider();
       const store = await getCache(credential, include_full_data);
       const entry = await store.get(date);
-      if (entry) {
+      if (entry && !entry.partial_day) {
         const elapsed = now() - entry.fetched_at;
         if (refresh && elapsed >= 0 && elapsed < (include_full_data ? 30_000 : REFRESH_WINDOW_MS)) {
           return { error: toPublicError(Object.assign(new Error('rate limited'), { code: 'rate_limited', retry_after_seconds: ((include_full_data ? 30_000 : REFRESH_WINDOW_MS) - elapsed) / 1000 })) };
@@ -236,6 +236,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
       let cache_saved = true;
       try {
         const cached = await store.get(validated.date);
+        entry.partial_day = !cached || Boolean(cached.partial_day);
         if (cached?.records) {
           const ids = new Set(safeRecords.map(r => r.id));
           entry.records = [...cached.records.filter(r => !ids.has(r.id)), ...safeRecords];

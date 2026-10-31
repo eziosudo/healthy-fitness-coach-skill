@@ -7,6 +7,7 @@ const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const cacheEntrySchema = z.object({
   fetched_at: z.number().finite(),
   include_full_data: z.boolean().optional(),
+  partial_day: z.boolean().optional(),
   records: z.array(z.object({}).passthrough()),
   warnings: z.array(z.string()).default([]),
   last_operation: z.string().optional()

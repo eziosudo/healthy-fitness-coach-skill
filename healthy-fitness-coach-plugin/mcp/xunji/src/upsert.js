@@ -25,7 +25,7 @@ function validateUpsertRecords(records, { now = Date.now() } = {}) {
   function named(m) { return m && typeof m.name === 'string' && /[\u3400-\u9fff]/.test(m.name) && !Object.hasOwn(m,'key'); }
   for (const train of records) {
     if (assertDate(train.datestr) !== date) throw connectorError('mixed_dates');
-    if (train.localid !== undefined && (!train.localid || !Number.isFinite(train.start) || !Number.isFinite(train.end))) throw connectorError('invalid_upsert');
+    if (train.localid !== undefined && (!train.localid || !Number.isFinite(train.start) || !Number.isFinite(train.end) || !Object.hasOwn(train,'note'))) throw connectorError('invalid_upsert');
     if (!Array.isArray(train.movements) || !train.movements.length) throw connectorError('invalid_upsert');
     let moves = 0;
     for (const m of train.movements) {
