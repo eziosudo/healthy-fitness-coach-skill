@@ -104,6 +104,7 @@ function extractNotes(text) {
 function parseTrainingRecords(rawRecords) {
   if (!Array.isArray(rawRecords)) return [];
   return rawRecords.map((raw) => {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return require('./structured-parser.js').parseStructuredTrain(raw);
     const raw_text = String(raw);
     const official = parseOfficialXunjiRow(raw_text);
     const id = tokenValue(raw_text, 'id');

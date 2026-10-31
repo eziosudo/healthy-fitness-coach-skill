@@ -1,0 +1,9 @@
+.git
+**/node_modules
+.env
+.env.*
+secrets
+**/data
+**/.DS_Store
+
+.venv

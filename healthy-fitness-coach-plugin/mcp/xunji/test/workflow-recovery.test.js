@@ -1,3 +1,4 @@
+function train(date='2026-08-01', id=1, title='胸部训练') { return {datestr:date, ...(id ? {localid:id} : {}), start:1785622384301,end:1785627630605,title,note:'',movements:[{name:'杠铃卧推',sets:[{done:true,weight:'60',unit:'kg',reps:'10'}]}]}; }
  'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -6,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTrainingService } = require('../src/server.js');
 const { OperationStore } = require('../src/operation-store.js');
-const records = ['2026-10-20,id:1,胸部训练,1.卧推,1组,60kg,10次,source:xunji'];
+const records = [train('2026-10-20')];
 function cache() { const m=new Map(); return {async get(d){return m.get(d);},async set(d,v){m.set(d,v);}}; }
 function fixture(options={}) {
  let clock=Date.parse('2026-10-21T01:00:00Z'), calls=0, reads=0;
@@ -18,7 +19,7 @@ test('write requires matching preview; changed data and expired previews never r
  const f=fixture();
  assert.equal((await f.service.upsertTrainingRecords({records,confirm:true})).error.code,'preview_required');
  const p=await f.service.previewTrainingUpsert({records});
- assert.equal((await f.service.upsertTrainingRecords({records:['2026-10-20,id:2,title'],confirm:true,preview_id:p.preview_id})).error.code,'preview_required');
+ assert.equal((await f.service.upsertTrainingRecords({records:[train('2026-10-20',2)],confirm:true,preview_id:p.preview_id})).error.code,'preview_required');
  f.advance(600001);
  assert.equal((await f.service.upsertTrainingRecords({records,confirm:true,preview_id:p.preview_id})).error.code,'preview_required');assert.equal(f.calls,0);
 });

@@ -335,3 +335,7 @@ python -m scripts.package_skill `
 Star history会根据GitHub上的公开数据自动更新，时间轴按项目公开后的Star累积情况展示，纵轴会根据实际数量自动调整。
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Surge-Dan/healthy-fitness-coach-skill&type=Date&theme=light)](https://www.star-history.com/#Surge-Dan/healthy-fitness-coach-skill&Date)
+
+## Raspberry Pi / HTTP MCP and training API v2
+
+See [deployment and API v2 notes](README.raspberrypi.md) for Docker, Bearer authentication, secret files, structured training reads/writes, testing and cache migration.

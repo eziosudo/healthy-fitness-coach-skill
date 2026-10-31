@@ -1,32 +1,11 @@
 'use strict';
+const assert=require('node:assert/strict');const test=require('node:test');
+const {validateUpsertRecords}=require('../src/upsert.js');
+function train(date='2026-08-01', id=1, title='胸部训练') { return {datestr:date, ...(id ? {localid:id} : {}), start:1785622384301,end:1785627630605,title,note:'',movements:[{name:'杠铃卧推',sets:[{done:true,weight:'60',unit:'kg',reps:'10'}]}]}; }
 
-const assert = require('node:assert/strict');
-const test = require('node:test');
-
-const { validateUpsertRecords } = require('../src/upsert.js');
-
-test('validates same-day records in long and compact date formats', () => {
-  const result = validateUpsertRecords([
-    '2026-08-01,id:123,胸部训练,train_time:1744010000000-1744013600000',
-    '260801,有氧,2.跑步,5km'
-  ]);
-  assert.equal(result.date, '2026-08-01');
-  assert.equal(result.records.length, 2);
-  assert.equal(result.existing_ids, 1);
-  assert.equal(result.new_records, 1);
-  assert.equal(result.parsed[0].id, '123');
-  assert.equal(result.parsed[0].train_time, '1744010000000-1744013600000');
-});
-
-test('rejects mixed dates before any network call', () => {
-  assert.throws(() => validateUpsertRecords([
-    '2026-08-01,id:1,胸部训练',
-    '2026-08-02,id:2,背部训练'
-  ]), { code: 'mixed_dates' });
-});
-
-test('rejects empty, oversized, and over-limit write batches', () => {
-  assert.throws(() => validateUpsertRecords([]), { code: 'invalid_upsert' });
-  assert.throws(() => validateUpsertRecords(['2026-08-01,' + 'x'.repeat(1500)]), { code: 'record_too_long' });
-  assert.throws(() => validateUpsertRecords(Array.from({ length: 13 }, () => '2026-08-01,休息日')), { code: 'record_limit' });
-});
+const opts={now:Date.parse('2026-10-31T01:00:00Z')};
+test('validates v2 same-day structured records and preserves note and unfinished sets',()=>{const r=train();r.note={text:'keep',heartRate:{avg:120}};r.movements[0].sets.push({done:false,reps:'5'});const v=validateUpsertRecords([r],opts);assert.deepEqual(v.records,[r]);assert.equal(v.existing_ids,1);assert.equal(v.date,r.datestr);});
+test('rejects legacy strings and over-limit batches',()=>{assert.throws(()=>validateUpsertRecords(['2026-08-01,胸'],opts),{code:'invalid_upsert'});assert.throws(()=>validateUpsertRecords(Array.from({length:5},()=>train()),opts),{code:'record_limit'});});
+test('rejects mixed dates and missing original timestamps',()=>{assert.throws(()=>validateUpsertRecords([train(),train('2026-08-02')],opts),{code:'mixed_dates'});const r=train();delete r.start;assert.throws(()=>validateUpsertRecords([r],opts),{code:'invalid_upsert'});});
+test('enforces RPE, Chinese names, six-month dates, and movement/set limits',()=>{for(const mutate of [r=>r.movements[0].sets[0].rpe='0',r=>r.movements[0].key='internal',r=>r.movements[0].name='invented',r=>r.datestr='2025-01-01',r=>r.movements[0].sets=Array.from({length:21},()=>({reps:'1'})),r=>r.movements=Array.from({length:16},()=>r.movements[0])]){const r=train();mutate(r);assert.throws(()=>validateUpsertRecords([r],opts));}});
+test('native cardio does not accept sets; super-set nested children are validated',()=>{const r=train();r.movements=[{name:'跑步',cardio:true,metrics:{distance:'5'}}];assert.ok(validateUpsertRecords([r],opts));r.movements[0].sets=[];assert.throws(()=>validateUpsertRecords([r],opts));r.movements=[{name:'推拉超级组',sets:[{done:true,items:[{name:'杠铃卧推',set:{done:true,weight:'40',reps:'8'}}]}]}];assert.ok(validateUpsertRecords([r],opts));r.movements[0].sets[0].items[0].set.items=[];assert.throws(()=>validateUpsertRecords([r],opts));});

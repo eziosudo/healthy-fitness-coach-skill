@@ -1,3 +1,4 @@
+function train(date='2026-08-01', id=1, title='胸部训练') { return {datestr:date, ...(id ? {localid:id} : {}), start:1785622384301,end:1785627630605,title,note:'',movements:[{name:'杠铃卧推',sets:[{done:true,weight:'60',unit:'kg',reps:'10'}]}]}; }
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -357,7 +358,7 @@ test('service previews a same-day upsert without contacting the network', async 
     credentialProvider: async () => 'SYNTHETIC_ACCOUNT_A',
     client: { async upsertRecords() { calls += 1; return { records: [] }; } }
   });
-  const result = await service.previewTrainingUpsert({ records: ['2026-08-01,id:1,胸部训练'] });
+  const result = await service.previewTrainingUpsert({ records: [train('2026-08-01', 1, '胸部训练')] });
   assert.equal(result.date, '2026-08-01');
   assert.equal(result.existing_ids, 1);
   assert.equal(calls, 0);
@@ -370,7 +371,7 @@ test('service refuses an unconfirmed write-back', async () => {
     credentialProvider: async () => 'SYNTHETIC_ACCOUNT_A',
     client: { async upsertRecords() { calls += 1; return { records: [] }; } }
   });
-  const result = await submitPreviewed(service, { records: ['2026-08-01,胸部训练'], confirm: false });
+  const result = await submitPreviewed(service, { records: [train('2026-08-01', null, '胸部训练')], confirm: false });
   assert.equal(result.error.code, 'writeback_not_confirmed');
   assert.equal(calls, 0);
 });
@@ -384,17 +385,17 @@ test('service caches the server-normalized upsert response as the final result',
     },
     credentialProvider: async () => 'SYNTHETIC_ACCOUNT_A',
     client: { async upsertRecords(records) {
-      assert.deepEqual(records, ['2026-08-01,id:1,胸部训练']);
-      return { records: ['2026-08-01,id:1,胸部训练,标准化'] };
+      assert.deepEqual(records, [train('2026-08-01', 1, '胸部训练')]);
+      return { records: [train('2026-08-01', 1, '标准化')] };
     } },
-    now: () => 456789
+    now: () => Date.parse('2026-10-31T01:00:00Z')
   });
-  const result = await submitPreviewed(service, { records: ['2026-08-01,id:1,胸部训练'], confirm: true });
+  const result = await submitPreviewed(service, { records: [train('2026-08-01', 1, '胸部训练')], confirm: true });
   assert.equal(result.date, '2026-08-01');
-  assert.equal(result.records[0].raw_text, '2026-08-01,id:1,胸部训练,标准化');
+  assert.deepEqual(result.records[0].train, train('2026-08-01', 1, '标准化'));
   assert.equal(cached.date, '2026-08-01');
-  assert.equal(cached.entry.fetched_at, 456789);
-  assert.equal(cached.entry.records[0].raw_text, '2026-08-01,id:1,胸部训练,标准化');
+  assert.equal(cached.entry.fetched_at, Date.parse('2026-10-31T01:00:00Z'));
+  assert.deepEqual(cached.entry.records[0].train, train('2026-08-01', 1, '标准化'));
 });
 
 test('service rejects a cross-date write-back response before caching it', async () => {
@@ -402,9 +403,9 @@ test('service rejects a cross-date write-back response before caching it', async
   const service = createTrainingService({
     cache: { async get() { return null; }, async set() { writes += 1; } },
     credentialProvider: async () => 'SYNTHETIC_ACCOUNT_A',
-    client: { async upsertRecords() { return { records: ['2026-08-02,id:wrong,title'] }; } }
+    client: { async upsertRecords() { return { records: [train('2026-08-02', 1, '胸部训练')] }; } }
   });
-  const result = await submitPreviewed(service, { records: ['2026-08-01,id:1,title'], confirm: true });
+  const result = await submitPreviewed(service, { records: [train('2026-08-01', 1, '胸部训练')], confirm: true });
   assert.equal(result.error.code, 'writeback_unknown');
   assert.equal(writes, 0);
 });
@@ -416,20 +417,20 @@ test('upsert never exposes Garmin rows even when the server returns them', async
     client: {
       async upsertRecords() {
         return { records: [
-          '2026-08-01,id:safe,胸部训练,1.卧推,1组,60kg,10次,source:xunji',
-          '2026-08-01,id:garmin,有氧,2.跑步,5km,source:Garmin'
+          train('2026-08-01', 1, '胸部训练'),
+          {...train('2026-08-01',2,'Garmin'),source:'garmin'}
         ] };
       }
     }
   });
 
   const result = await submitPreviewed(service, {
-    records: ['2026-08-01,胸部训练,1.卧推,1组,60kg,10次'],
+    records: [train('2026-08-01', null, '胸部训练')],
     confirm: true
   });
 
   assert.equal(result.error, undefined);
-  assert.deepEqual(result.server_records.map((record) => record.id), ['safe']);
+  assert.deepEqual(result.server_records.map((record) => record.id), ['1']);
 });
 
 test('service rejects date-less write-back rows and never returns raw unsafe server records', async () => {
@@ -439,7 +440,7 @@ test('service rejects date-less write-back rows and never returns raw unsafe ser
     credentialProvider: async () => 'SYNTHETIC_ACCOUNT_A',
     client: { async upsertRecords() { return { records: ['id:missing-date,title'] }; } }
   });
-  const result = await submitPreviewed(service, { records: ['2026-08-01,id:1,title'], confirm: true });
+  const result = await submitPreviewed(service, { records: [train('2026-08-01', 1, '胸部训练')], confirm: true });
   assert.equal(result.error.code, 'writeback_unknown');
   assert.equal(writes, 0);
 });

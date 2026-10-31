@@ -1,0 +1,92 @@
+{
+  "name": "healthy-fitness-mcp",
+  "services": {
+    "mcp": {
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile.raspberrypi"
+      },
+      "image": "healthy-fitness-xunji-mcp:local",
+      "container_name": "healthy-fitness-mcp",
+      "restart": "unless-stopped",
+      "ports": [
+        "10.0.0.45:8091:8080"
+      ],
+      "environment": {
+        "MCP_APP_ACCESS_TOKEN_FILE": "/run/secrets/mcp-access-token",
+        "XUNJI_API_KEY_FILE": "/run/secrets/xunji-training-key",
+        "LOCALAPPDATA": "/app/data",
+        "TZ": "Asia/Shanghai",
+        "MCP_ALLOWED_HOSTS": "10.0.0.45:8091,127.0.0.1:8091,localhost:8091,localhost:8080,127.0.0.1:8080,fitness-mcp.eziosudo.org,syncfit-mcp.eziosudo.org"
+      },
+      "volumes": [
+        "./data:/app/data",
+        "./secrets/mcp-access-token:/run/secrets/mcp-access-token:ro",
+        "./secrets/xunji-training-key:/run/secrets/xunji-training-key:ro"
+      ],
+      "read_only": true,
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,size=16m"
+      ],
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ],
+        "interval": "30s",
+        "timeout": "5s",
+        "retries": 3,
+        "start_period": "15s"
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+    },
+    "tunnel": {
+      "image": "cloudflare/cloudflared:latest",
+      "container_name": "syncfit-mcp-tunnel",
+      "restart": "unless-stopped",
+      "command": [
+        "tunnel",
+        "--no-autoupdate",
+        "run",
+        "--token-file",
+        "/run/secrets/tunnel-token"
+      ],
+      "volumes": [
+        "./secrets/cloudflared-token:/run/secrets/tunnel-token:ro"
+      ],
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "depends_on": {
+        "mcp": {
+          "condition": "service_healthy"
+        }
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+    }
+  }
+}

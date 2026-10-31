@@ -17,7 +17,7 @@ const { compareTrainingDNA } = require('./training-dna.js');
 const { validateUpsertRecords } = require('./upsert.js');
 const { decodeXunjiResponse, XunjiClient } = require('./xunji-client.js');
 
-const REFRESH_WINDOW_MS = 90_000;
+const REFRESH_WINDOW_MS = 15_000;
 const MAX_RANGE_DAYS = 90;
 const MAX_TOTAL_RANGE_DAYS = 366 * 5;
 
@@ -66,20 +66,21 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
   const accountCaches = new Map();
   const accountDnaStores = new Map();
   const dnaPending = new Map();
-  const getCache = async (credential) => {
+  const getCache = async (credential, full = false) => {
     // `cache` is a test-only single-store injection. Production always keys its
     // stores by the one-way credential fingerprint below.
     if (cache) return cache;
-    if (!localAppData) throw connectorError('cache_error');
+    if (!localAppData && !cacheFactory) throw connectorError('cache_error');
     const fingerprint = credentialFingerprint(credential);
-    if (accountCaches.has(fingerprint)) return accountCaches.get(fingerprint);
-    const root = join(localAppData, 'HealthyFitnessCoach', 'xunji-cache');
+    const cacheKey = `${fingerprint}:${full}`;
+    if (accountCaches.has(cacheKey)) return accountCaches.get(cacheKey);
+    const root = join(localAppData || '.', 'HealthyFitnessCoach', 'xunji-cache-v2', full ? 'full' : 'summary');
     const storePromise = cacheFactory ? Promise.resolve().then(() => cacheFactory(credential)) : Promise.resolve(new FileCache({ root, fingerprint }));
-    accountCaches.set(fingerprint, storePromise);
+    accountCaches.set(cacheKey, storePromise);
     try {
       return await storePromise;
     } catch (error) {
-      if (accountCaches.get(fingerprint) === storePromise) accountCaches.delete(fingerprint);
+      if (accountCaches.get(cacheKey) === storePromise) accountCaches.delete(cacheKey);
       throw error;
     }
   };
@@ -100,6 +101,8 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     const crossDate = filtered.length - records.length;
     return {
       date,
+      api_version: 'train_open_api_v2',
+      include_full_data: Boolean(entry.include_full_data),
       fetched_at: entry.fetched_at,
       cache_hit: cacheHit,
       cache_hits: cacheHit ? 1 : 0,
@@ -111,18 +114,18 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     };
   };
 
-  async function fetchMissing(date, credential, store) {
-    const pendingKey = `${credentialFingerprint(credential)}:${date}`;
+  async function fetchMissing(date, credential, store, include_full_data = false) {
+    const pendingKey = `${credentialFingerprint(credential)}:${date}:${include_full_data}`;
     if (pending.has(pendingKey)) return pending.get(pendingKey);
     const operation = (async () => {
       try {
-        const response = await client.fetchDay(date, credential);
+        const response = await client.fetchDay(date, credential, { include_full_data });
         const decoded = response && Array.isArray(response.records) ? response : decodeXunjiResponse(response);
         const parsed = parseTrainingRecords(decoded.records);
         const filtered = filterModelFacingRecords(parsed);
         const safeRecords = filtered.filter((record) => !record.warnings?.includes('invalid_date') && record.record_date === date);
-        const warnings = [...filtered.warnings, ...parsed.flatMap((record) => record.warnings || []), ...(safeRecords.length !== filtered.length ? [`cross_date_records_dropped:${filtered.length - safeRecords.length}`] : [])];
-        const entry = { fetched_at: now(), records: safeRecords, warnings };
+        const warnings = [...(decoded.truncated ? ['truncated_data'] : []), ...filtered.warnings, ...parsed.flatMap((record) => record.warnings || []), ...(safeRecords.length !== filtered.length ? [`cross_date_records_dropped:${filtered.length - safeRecords.length}`] : [])];
+        const entry = { fetched_at: now(), records: safeRecords, warnings, include_full_data };
         await store.set(date, entry);
         if (logger && typeof logger.info === 'function') logger.info('xunji_training_day_fetched', { date });
         return resultFromEntry(date, entry, false, 1);
@@ -134,22 +137,22 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     try { return await operation; } finally { pending.delete(pendingKey); }
   }
 
-  async function getTrainingDay({ date, refresh = false, credentialOverride = null } = {}) {
+  async function getTrainingDay({ date, refresh = false, include_full_data = false, credentialOverride = null } = {}) {
     try {
       assertDate(date);
       const credential = credentialOverride || await credentialProvider();
-      const store = await getCache(credential);
+      const store = await getCache(credential, include_full_data);
       const entry = await store.get(date);
       if (entry) {
         const elapsed = now() - entry.fetched_at;
-        if (refresh && elapsed >= 0 && elapsed < REFRESH_WINDOW_MS) {
-          return { error: toPublicError(Object.assign(new Error('rate limited'), { code: 'rate_limited', retry_after_seconds: (REFRESH_WINDOW_MS - elapsed) / 1000 })) };
+        if (refresh && elapsed >= 0 && elapsed < (include_full_data ? 30_000 : REFRESH_WINDOW_MS)) {
+          return { error: toPublicError(Object.assign(new Error('rate limited'), { code: 'rate_limited', retry_after_seconds: ((include_full_data ? 30_000 : REFRESH_WINDOW_MS) - elapsed) / 1000 })) };
         }
         const todayDate = today ? today() : currentShanghaiDate(now());
         const ageDays = (Date.parse(todayDate) - Date.parse(date)) / 86400000;
         const recentExpired = ageDays >= 0 && ageDays < 7 && elapsed >= 300000;
         if (!refresh && !recentExpired) return resultFromEntry(date, entry, true, 0);
-        const refreshed = await fetchMissing(date, credential, store);
+        const refreshed = await fetchMissing(date, credential, store, include_full_data);
         if (refreshed.error) {
           if (['missing_credentials', 'invalid_credentials', 'membership_required'].includes(refreshed.error.code)) return refreshed;
           const fallback = resultFromEntry(date, entry, true, 0);
@@ -158,13 +161,13 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
         }
         return refreshed;
       }
-      return await fetchMissing(date, credential, store);
+      return await fetchMissing(date, credential, store, include_full_data);
     } catch (error) {
       return { error: toPublicError(error) };
     }
   }
 
-  async function getTrainingRange({ start_date, end_date, refresh_today = false, refresh_dates = [], refresh_all = false, credentialOverride = null } = {}) {
+  async function getTrainingRange({ start_date, end_date, include_full_data = false, refresh_today = false, refresh_dates = [], refresh_all = false, credentialOverride = null } = {}) {
     let dates;
     try { dates = dateRangeChunks(start_date, end_date).flat(); if (!Array.isArray(refresh_dates)) throw connectorError('invalid_date'); refresh_dates.forEach(assertDate); if (refresh_dates.some(date => !dates.includes(date))) throw connectorError('invalid_date'); } catch (error) { return { error: toPublicError(error) }; }
     let credential;
@@ -173,7 +176,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     let firstError = null;
     const todayDate = today ? today() : currentShanghaiDate(now());
     for (const date of dates) {
-      const day = await getTrainingDay({ date, refresh: refresh_all || refresh_dates.includes(date) || (refresh_today && date === todayDate), credentialOverride: credential });
+      const day = await getTrainingDay({ date, include_full_data, refresh: refresh_all || refresh_dates.includes(date) || (refresh_today && date === todayDate), credentialOverride: credential });
       if (day.error) {
         if (!firstError) firstError = day.error;
         aggregate.missing_dates.push(date);
@@ -195,14 +198,14 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
 
   async function previewTrainingUpsert({ records } = {}) {
     try {
-      const validated = validateUpsertRecords(records);
+      const validated = validateUpsertRecords(records, { now: now() });
       const credential = await credentialProvider();
       const key = digest(credential, records);
       for (const [id, preview] of previews) if (preview.expires_at <= now()) previews.delete(id);
       const preview_id = randomUUID();
       const expires_at = now() + 600000;
       previews.set(preview_id, { key, expires_at });
-      return { date: validated.date, record_count: records.length, existing_ids: validated.existing_ids,
+      return { api_version: 'train_open_api_v2', changes: validated.records.map(r => ({ operation: r.localid === undefined ? 'create' : 'update', date: r.datestr, localid: r.localid, title: r.title, movements: r.movements.map(m => ({ name: m.name, sets: m.sets?.length || 0, cardio: m.cardio === true })) })), date: validated.date, record_count: records.length, existing_ids: validated.existing_ids,
         new_records: validated.new_records, records: validated.records, parsed: validated.parsed,
         preview_id, expires_at, previous_submission: await operations.get(key) || null, requires_confirmation: true };
     } catch (error) { return { error: toPublicError(error) }; }
@@ -213,25 +216,36 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     let key, validated, store;
     let submitted = false;
     try {
-      validated = validateUpsertRecords(records);
+      validated = validateUpsertRecords(records, { now: now() });
       const credential = await credentialProvider();
       key = digest(credential, records);
       const preview = previews.get(preview_id);
       if (!preview || preview.key !== key || preview.expires_at <= now()) throw connectorError('preview_required');
-      store = await getCache(credential);
+      store = await getCache(credential, true);
       // Durable claim happens before sending; a crash leaves an unknown result, never a safe automatic retry.
       if (!await operations.claim(key, { outcome: 'unknown', date: validated.date, submitted_at: now() }))
         return { outcome: 'reconciliation_required', error: toPublicError(connectorError('reconciliation_required')) };
       submitted = true;
-      const response = await client.upsertRecords(validated.records, credential);
+      const response = await client.upsertRecords(validated.records, credential, { client_request_id: key });
       const decoded = response && Array.isArray(response.records) ? response : decodeXunjiResponse(response);
       const parsed = parseTrainingRecords(decoded.records);
       if (!parsed.length || parsed.some(record => !record.record_date || record.record_date !== validated.date || record.warnings?.includes('invalid_date'))) throw connectorError('invalid_response');
       const safeRecords = filterModelFacingRecords(parsed);
       const warnings = [...safeRecords.warnings, ...parsed.flatMap(record => record.warnings || [])];
-      const entry = { fetched_at: now(), records: safeRecords, warnings, last_operation: 'upsert' };
+      const entry = { fetched_at: now(), records: safeRecords, warnings, last_operation: 'upsert', include_full_data: true };
       let cache_saved = true;
-      try { await store.set(validated.date, entry); } catch (_) { cache_saved = false; warnings.push('write_confirmed_cache_failed'); }
+      try {
+        const cached = await store.get(validated.date);
+        if (cached?.records) {
+          const ids = new Set(safeRecords.map(r => r.id));
+          entry.records = [...cached.records.filter(r => !ids.has(r.id)), ...safeRecords];
+        }
+        await store.set(validated.date, entry);
+        const summaryStore = await getCache(credential);
+        if (summaryStore !== store) {
+          if (summaryStore.delete) await summaryStore.delete(validated.date);
+        }
+      } catch (_) { cache_saved = false; warnings.push('write_confirmed_cache_failed'); }
       try { await operations.set(key, { outcome: 'confirmed', date: validated.date, confirmed_at: now() }); }
       catch (_) { warnings.push('write_confirmed_journal_update_failed'); }
       return { ...resultFromEntry(validated.date, entry, false, 1), outcome: 'confirmed', writeback: true,
@@ -246,7 +260,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
 
   async function reconcileTrainingUpsert({ records, verification_id, confirm_not_applied = false } = {}) {
     try {
-      const validated = validateUpsertRecords(records);
+      const validated = validateUpsertRecords(records, { now: now() });
       const credential = await credentialProvider();
       const key = digest(credential, records);
       if (confirm_not_applied) {
@@ -257,7 +271,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
         return { outcome: 'verified_not_applied', next: 'create_new_preview_and_confirm', writeback: false };
       }
       // Reconciliation must read the server, not a possibly stale cache.
-      const response = await client.fetchDay(validated.date, credential);
+      const response = await client.fetchDay(validated.date, credential, { include_full_data: true });
       const decoded = response && Array.isArray(response.records) ? response : decodeXunjiResponse(response);
       const parsed = parseTrainingRecords(decoded.records);
       if (parsed.some(record => record.record_date !== validated.date || record.warnings?.includes('invalid_date'))) throw connectorError('invalid_response');
@@ -272,17 +286,17 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
     } catch (error) { return { error: toPublicError(error), outcome: 'unknown' }; }
   }
 
-  async function getTrainingTrends({ start_date, end_date, refresh_today = false, refresh_dates = [], refresh_all = false, planned_sessions_per_week, profile } = {}) {
-    const range = await getTrainingRange({ start_date, end_date, refresh_today, refresh_dates, refresh_all });
+  async function getTrainingTrends({ start_date, end_date, include_full_data = false, refresh_today = false, refresh_dates = [], refresh_all = false, planned_sessions_per_week, profile } = {}) {
+    const range = await getTrainingRange({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all });
     if (range.error) return range;
     const trends = analyzeTrainingRange({ ...range, planned_sessions_per_week, profile });
     return { range, trends, dashboard_html: renderTrainingDashboardHtml({ range, trends }), visual_assets: buildVisualReportAssets({ trends }) };
   }
 
-  async function getTrainingDNAUnlocked({ start_date, end_date, refresh_today = false, refresh_dates = [], refresh_all = false, planned_sessions_per_week, profile } = {}, credentialOverride = null) {
+  async function getTrainingDNAUnlocked({ start_date, end_date, include_full_data = false, refresh_today = false, refresh_dates = [], refresh_all = false, planned_sessions_per_week, profile } = {}, credentialOverride = null) {
     let credential;
     try { credential = credentialOverride || await credentialProvider(); } catch (error) { return { error: toPublicError(error) }; }
-    const range = await getTrainingRange({ start_date, end_date, refresh_today, refresh_dates, refresh_all, credentialOverride: credential });
+    const range = await getTrainingRange({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all, credentialOverride: credential });
     if (range.error) return range;
     const trends = analyzeTrainingRange({ ...range, planned_sessions_per_week, profile });
     const current = buildReviewFirstTrainingDNA({ range, planned_sessions_per_week, profile, previous_dna: null });
@@ -329,7 +343,7 @@ function createTrainingService({ operationStore = null, cache = null, cacheFacto
 function createMcpServer(options = {}) {
   const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
   const service = options.service || createTrainingService(options);
-  const server = new McpServer({ name: 'healthy-fitness-xunji', version: '1.0.0' });
+  const server = new McpServer({ name: 'healthy-fitness-xunji', version: '2.1.0' });
   const result = async (promise) => {
     const value = await promise;
     return value.error
@@ -338,39 +352,39 @@ function createMcpServer(options = {}) {
   };
   server.registerTool('xunji_get_training_day', {
     description: 'Read one day of local Xunji training data.',
-    inputSchema: { date: z.string(), refresh: z.boolean().optional() },
+    inputSchema: { date: z.string(), refresh: z.boolean().optional(), include_full_data: z.boolean().optional() },
     annotations: { readOnlyHint: true }
-  }, ({ date, refresh }) => result(service.getTrainingDay({ date, refresh })));
+  }, ({ date, refresh, include_full_data }) => result(service.getTrainingDay({ date, refresh, include_full_data })));
   server.registerTool('xunji_get_training_range', {
     description: 'Read a local-date range of Xunji training data.',
-    inputSchema: { start_date: z.string(), end_date: z.string(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional() },
+    inputSchema: { start_date: z.string(), end_date: z.string(), include_full_data: z.boolean().optional(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional() },
     annotations: { readOnlyHint: true }
-  }, ({ start_date, end_date, refresh_today, refresh_dates, refresh_all }) => result(service.getTrainingRange({ start_date, end_date, refresh_today, refresh_dates, refresh_all })));
+  }, ({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all }) => result(service.getTrainingRange({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all })));
   server.registerTool('xunji_preview_training_upsert', {
     description: 'Validate and preview same-day Xunji training updates without writing.',
-    inputSchema: { records: z.array(z.string()) },
+    inputSchema: { records: z.array(z.object({ datestr: z.string(), movements: z.array(z.object({}).passthrough()) }).passthrough()).min(1).max(4) },
     annotations: { readOnlyHint: true }
   }, ({ records }) => result(service.previewTrainingUpsert({ records })));
   server.registerTool('xunji_upsert_training_records', {
-    description: 'Write confirmed same-day Xunji training records by ID and cache the server result.',
-    inputSchema: { records: z.array(z.string()), confirm: z.boolean(), preview_id: z.string() },
+    description: 'Write v2 structured training records after explicit user confirmation of the matching preview. Existing records must preserve localid, start/end, movements and note metadata.',
+    inputSchema: { records: z.array(z.object({ datestr: z.string(), movements: z.array(z.object({}).passthrough()) }).passthrough()).min(1).max(4), confirm: z.boolean(), preview_id: z.string() },
     annotations: { readOnlyHint: false }
   }, ({ records, confirm, preview_id }) => result(service.upsertTrainingRecords({ records, confirm, preview_id })));
   server.registerTool('xunji_reconcile_training_upsert', {
     description: 'Read server records after an uncertain write. Only clear the submission lock after the user verifies it was not applied.',
-    inputSchema: { records: z.array(z.string()), verification_id: z.string().optional(), confirm_not_applied: z.boolean().optional() },
+    inputSchema: { records: z.array(z.object({ datestr: z.string(), movements: z.array(z.object({}).passthrough()) }).passthrough()).min(1).max(4), verification_id: z.string().optional(), confirm_not_applied: z.boolean().optional() },
     annotations: { readOnlyHint: false }
   }, args => result(service.reconcileTrainingUpsert(args)));
   server.registerTool('xunji_get_training_trends', {
     description: 'Analyze cached Xunji training range trends.',
-    inputSchema: { start_date: z.string(), end_date: z.string(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional(), planned_sessions_per_week: z.number().finite().nonnegative().max(14).optional(), profile: z.record(z.string(), z.unknown()).optional() },
+    inputSchema: { start_date: z.string(), end_date: z.string(), include_full_data: z.boolean().optional(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional(), planned_sessions_per_week: z.number().finite().nonnegative().max(14).optional(), profile: z.record(z.string(), z.unknown()).optional() },
     annotations: { readOnlyHint: true }
-  }, ({ start_date, end_date, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile }) => result(service.getTrainingTrends({ start_date, end_date, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile })));
+  }, ({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile }) => result(service.getTrainingTrends({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile })));
   server.registerTool('xunji_extract_training_dna', {
     description: 'Extract an evidence-bounded training DNA from cached Xunji records without writing or changing training data.',
-    inputSchema: { start_date: z.string(), end_date: z.string(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional(), planned_sessions_per_week: z.number().finite().nonnegative().max(14).optional(), profile: z.record(z.string(), z.unknown()).optional() },
+    inputSchema: { start_date: z.string(), end_date: z.string(), include_full_data: z.boolean().optional(), refresh_today: z.boolean().optional(), refresh_dates: z.array(z.string()).optional(), refresh_all: z.boolean().optional(), planned_sessions_per_week: z.number().finite().nonnegative().max(14).optional(), profile: z.record(z.string(), z.unknown()).optional() },
     annotations: { readOnlyHint: true }
-  }, ({ start_date, end_date, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile }) => result(service.getTrainingDNA({ start_date, end_date, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile })));
+  }, ({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile }) => result(service.getTrainingDNA({ start_date, end_date, include_full_data, refresh_today, refresh_dates, refresh_all, planned_sessions_per_week, profile })));
   return { server, service };
 }
 

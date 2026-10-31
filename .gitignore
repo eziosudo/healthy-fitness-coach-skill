@@ -9,3 +9,8 @@ coverage/
 .env.*
 !.env.example
 .DS_Store
+
+# Deployment credentials and private account data
+/secrets/
+/data/
+/.venv/

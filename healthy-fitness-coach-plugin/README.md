@@ -28,7 +28,7 @@ npm --prefix .\mcp\xunji ci --omit=dev --ignore-scripts
 
 - 凭据和缓存仅保存在 `%LOCALAPPDATA%\HealthyFitnessCoach\`；缓存按日期存储。
 - MCP 提供按日/按范围读取、趋势分析、训练DNA提取、写回预览和显式确认写回；读取与DNA提取工具仍为**只读**，写回不是整天覆盖删除。
-- 写回前先调用预览工具，确认所有记录属于同一天、最多 12 条且每条不超过 1500 字符；更新已有记录时保留 `id:`，有 `train_time:` 时原样带回。
+- 写回前先调用预览工具，确认所有记录属于同一天、最多 4 条 v2 结构化训练对象；更新前读取完整模式并保留 localid、start/end、movements 和 note。
 - 成功写回后，以训记返回的最新 `res` 作为最终结果并更新当天缓存。
 - 趋势工具返回本地自包含 HTML，可保存到工作区 `fitness-reports/`；不加载外部 CDN，也不上传用户数据。
 - `xunji_extract_training_dna`会分别分析阻力和有氧训练，返回八维DNA、数据质量、证据台账和版本变更；DNA版本保存在`%LOCALAPPDATA%\HealthyFitnessCoach\training-dna\`，按账号单向fingerprint隔离。
@@ -60,7 +60,7 @@ Node 18 依赖树中仍存在已知的 Hono static-server advisory。该 Plugin 
 
 本地连接器仍仅支持 Windows，不提供手机远程服务。凭据通过本机受保护入口配置，禁止在聊天提交 Key。手机可使用独立 Skill 导入数据。
 
-范围、趋势、DNA支持 `refresh_dates` 和 `refresh_all`。最近七天缓存满五分钟更新，90秒内不重复刷新。
+范围、趋势、DNA支持 `refresh_dates` 和 `refresh_all`。最近七天缓存满五分钟更新，普通模式15秒、完整模式30秒内不重复刷新。
 
 写回现在必须先获得十分钟有效的 `preview_id`，确认内容后携带该ID提交。结果未知先用 `xunji_reconcile_training_upsert` 核对，不盲目重试。本地 `write-operations/` 保存提交摘要状态，服务重启仍阻止同批重发；不是服务端幂等保证。用户核对最新记录并确认未写入后才解除锁。服务端确认且本地缓存失败时依然返回 confirmed。
 

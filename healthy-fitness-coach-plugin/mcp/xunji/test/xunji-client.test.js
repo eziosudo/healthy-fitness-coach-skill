@@ -1,3 +1,4 @@
+function train(date='2026-08-01', id=1, title='胸部训练') { return {datestr:date, ...(id ? {localid:id} : {}), start:1785622384301,end:1785627630605,title,note:'',movements:[{name:'杠铃卧推',sets:[{done:true,weight:'60',unit:'kg',reps:'10'}]}]}; }
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -18,13 +19,13 @@ async function withServer(handler, run) {
   }
 }
 
-test('client posts only datestr to an injected localhost endpoint', async () => {
+test('client posts v2 schema and datestr to an injected localhost endpoint', async () => {
   await withServer((request, response) => {
     let body = '';
     request.on('data', (chunk) => { body += chunk; });
     request.on('end', () => {
       assert.equal(request.method, 'POST');
-      assert.deepEqual(JSON.parse(body), { datestr: '2026-08-01' });
+      assert.deepEqual(JSON.parse(body), { schema_version:'train_open_api_v2', datestr:'2026-08-01', include_full_data:false });
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ success: true, res: [] }));
     });
@@ -91,16 +92,16 @@ test('client upserts records to the dedicated endpoint and returns server record
     let body = '';
     request.on('data', (chunk) => { body += chunk; });
     request.on('end', () => {
-      assert.equal(request.url, '/api_upsert_trains_for_llm');
+      assert.equal(request.url, '/api_upsert_trains_for_llm_v2');
       assert.equal(request.headers.authorization.startsWith('Bearer '), true);
       assert.equal(request.headers.authorization.endsWith('FAKE_TEST_CREDENTIAL'), true);
-      assert.deepEqual(JSON.parse(body), { res: ['2026-08-01,id:1,胸部训练'] });
-      response.end(JSON.stringify({ success: true, res: ['2026-08-01,id:1,胸部训练'] }));
+      const payload=JSON.parse(body); assert.equal(payload.schema_version,'train_open_api_v2'); assert.ok(payload.client_request_id); assert.equal(payload.dry_run,false); assert.equal(payload.include_full_data,true); assert.deepEqual(payload.res,[train()]);
+      response.end(JSON.stringify({ success: true, res: [train()] }));
     });
   }, async (baseUrl) => {
     const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
-    const result = await client.upsertRecords(['2026-08-01,id:1,胸部训练'], 'FAKE_TEST_CREDENTIAL');
-    assert.deepEqual(result.records, ['2026-08-01,id:1,胸部训练']);
+    const result = await client.upsertRecords([train()], 'FAKE_TEST_CREDENTIAL');
+    assert.deepEqual(result.records, [train()]);
   });
 });
 
@@ -110,7 +111,7 @@ test('client maps documented Xunji business errors without leaking credentials',
     response.end(JSON.stringify({ success: false, error: '仅VIP可用' }));
   }, async (baseUrl) => {
     const client = new XunjiClient({ baseUrl, timeoutMs: 500 });
-    await assert.rejects(client.upsertRecords(['2026-08-01,休息日'], 'FAKE_TEST_CREDENTIAL'), (error) => {
+    await assert.rejects(client.upsertRecords([train()], 'FAKE_TEST_CREDENTIAL'), (error) => {
       assert.equal(error.code, 'membership_required');
       assert.equal(JSON.stringify(error).includes('FAKE_TEST_CREDENTIAL'), false);
       return true;

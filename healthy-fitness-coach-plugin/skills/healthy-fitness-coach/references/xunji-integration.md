@@ -7,7 +7,7 @@
 1. 先判断能力，不先索取 Key。“连接训记”已表达连接意图，无需再次询问相同问题；仅提及训记不自动连接。
 2. 连接器和凭据就绪：读取用户指定的一个日期验证；未指定则询问日期。成功空记录与请求失败分别说明。
 3. 有连接器但缺凭据：引导宿主受保护输入入口；Windows Plugin 使用本地凭据配置脚本。禁止让用户在对话、截图或文件中提交 API Key。
-4. 无兼容工具或安全配置入口：提供“导入文本/文件/截图”和“先开始训练”。仓库未提供远程服务，不声称手机能运行本地 stdio/DPAPI。
+4. 无兼容工具或安全配置入口：提供“导入文本/文件/截图”和“先开始训练”。HTTP/Docker 服务部署见仓库 README.raspberrypi.md；Windows stdio/DPAPI 仍需宿主支持。
 5. 使用本文件的接口契约，不要求每个用户重新找 API 文档。接口变化时才请求不含 Key 的官方说明，并标记待验证。
 
 ## 手机导入与恢复
@@ -23,14 +23,14 @@
 - `xunji_get_training_trends`：读取范围并返回结构化趋势与本地自包含 HTML 面板内容。
 - `xunji_extract_training_dna`：读取缓存训练范围并先生成标准复盘 facts + decision，再消费它们分别分析阻力与有氧反应，生成带证据范围和置信度的训练DNA，并在本机按账号指纹保存版本与变更记录；原始训练行不得绕过复盘层直接成为默认DNA证据。
 - `xunji_preview_training_upsert`：绑定本机账号和内容，返回十分钟有效的 `preview_id`；不联网、不修改训记记录。
-- `xunji_upsert_training_records`：确认匹配预览后携带 `preview_id`，按训练 ID upsert。
+- `xunji_upsert_training_records`：确认匹配预览后携带 `preview_id`，按 localid upsert。
 - `xunji_reconcile_training_upsert`：结果未知时读服务端核对；用户确认未写入后，凭五分钟有效的 `verification_id` 解除本地提交锁。
 
 ## 读取规则
 
-连接器调用 `/api_trains_for_llm`，使用 `datestr: YYYY-MM-DD` 和本机 DPAPI 凭据。响应可能是 gzip JSON，核心数据在 `res` 数组中。保留每条记录的原始文本、`id:`、`train_time:`、`record_date`、`fetched_at`、缓存命中状态和警告。
+连接器调用 `POST https://trains.xunjiapp.cn/api_trains_for_llm_v2`，请求包含 `schema_version: "train_open_api_v2"`、`datestr: YYYY-MM-DD` 和 `include_full_data`。核心数据在 `res.trains`，不要求存在 success 字段。保留结构化原训练 `train`（含 localid、start/end、movements、note）、record_date、fetched_at 和警告。普通读取默认 `include_full_data: false`；修改旧记录或读取 RPE、心率、未完成组、递减组、备注时必须先用 `include_full_data: true`。超级组读取 sets[].items，递减组读取 sets[].dropSets，心率读取整次或各组摘要，不要求原始心率数组。
 
-同一训练日 90 秒内不要重复刷新。最近七天缓存满五分钟自动更新；更早日期默认读缓存。补录使用 `refresh_dates`，明确整段刷新用 `refresh_all: true`；范围、趋势和DNA均支持。刷新失败标记 `refresh_failed_using_cache`，不得称为最新数据。缓存按凭据 fingerprint 隔离，不能跨账号复用。
+同一训练日普通读取至少间隔 15 秒，完整模式至少 30 秒；服务端限频时遵守 retry_after_seconds。最近七天缓存满五分钟自动更新；更早日期默认读缓存。补录使用 `refresh_dates`，明确整段刷新用 `refresh_all: true`；范围、趋势和DNA均支持。刷新失败标记 `refresh_failed_using_cache`，不得称为最新数据。缓存按凭据 fingerprint 隔离，不能跨账号复用。
 
 ## 趋势模式
 
@@ -52,17 +52,17 @@ DNA版本只保存在本机`HealthyFitnessCoach/training-dna/`，文件名使用
 
 ## 写回规则
 
-写回使用 `/api_upsert_trains_for_llm`，不是整天覆盖删除：
+写回使用 `/api_upsert_trains_for_llm_v2`，不是整天覆盖删除：
 
 1. 先调用 `xunji_preview_training_upsert`；
-2. 确认 `res` 是非空字符串数组、最多 12 条、每条不超过 1500 字符；
-3. 确认所有记录都属于同一天，支持 `YYYY-MM-DD` 或 `YYMMDD`；
-4. 修改已有记录必须保留原导出中的 `id:...`；有 `train_time:...` 时原样带回；
+2. 确认 `records` 是 v2 训练对象数组、最多 4 条，每条最多 15 个动作、每动作最多 20 组/轮；超级组按最多子项数计入动作数；
+3. 确认所有记录 datestr 都属于同一天，格式 YYYY-MM-DD，且在今天前后各六个月内；
+4. 修改已有记录必须从完整模式的 train 复制，保留 localid、start、end、全部 movements/sets 及 note 元数据；只改用户指定字段，不丢弃未完成组。动作只传标准中文 name，不传内部 key；不确定时查询官方动作名表 https://github.com/Foveluy/Xunji-movements，不编造名称。RPE 合法值为字符串 6–10、步进 0.5，清空用空字符串；difficulty 仅 easy/normal/hard。原生有氧用 cardio:true 和顶层 metrics，不传 sets；
 5. 只有用户明确确认后，调用 `xunji_upsert_training_records` 并传 `confirm: true` 和预览的 `preview_id`；内容、账号改变或过期必须重新预览；
 6. 写入成功后，以服务端返回的 `res` 作为最终结果并更新当天缓存；
 7. 不在本次 `res` 中的旧训练不会被删除。
 
-写回修改训记；核对工具仅可能修改本地提交锁。写回前后保留日期、训练 ID、时间 token 和原始行；失败时不伪造成功结果。
+写回修改训记；核对工具仅可能修改本地提交锁。写回前后保留日期、localid、start/end 和原始结构化对象；失败时不伪造成功结果。
 
 ## 隐私与安全
 
@@ -80,3 +80,9 @@ DNA版本只保存在本机`HealthyFitnessCoach/training-dna/`，文件名使用
 - `reconciliation_required`：同批已有提交，先核对服务端记录的日期、ID、动作和组次。
 
 核对失败、记录过滤或解析不全时不解除锁。用户看过最新完整结果并明确确认未写入后，才传 `confirm_not_applied: true` 和 `verification_id`，再新建预览确认。生产日志位于本机 `HealthyFitnessCoach/write-operations/`，只保存账号关联的摘要哈希、日期和状态，重启仍阻止同批重发；这不是服务端幂等保证，改动批次仍需核对已有 ID。
+
+## v2 写入与范围
+
+写入请求使用 schema_version、稳定的 client_request_id、dry_run:false 和 include_full_data:true。写回同一日 45 秒限频，不自动重试不明确的写入。restTime/warn_restTime 是正式/热身组的目标休息秒数；sets[].restSeconds 是实际休息时长。
+
+官方计划另有只读 POST https://api.xunjiapp.cn/open/plan/query_gzip（plan_open_api_v1，action:list/get）；当前七个 MCP 工具尚未封装该接口。饮食、身体指标 API 也不在此连接器范围内。

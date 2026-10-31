@@ -88,14 +88,16 @@ function analyzeTrainingRange(input = {}) {
     estimatedVolume += numericVolume(record);
     if (record.parse_status && record.parse_status !== 'complete') parseWarnings += 1;
     if (Array.isArray(record.warnings) && record.warnings.length) parseWarnings += 1;
-    const name = record.title || record.name;
+    const exerciseRows = Array.isArray(record.exercises) && record.exercises.length ? record.exercises : [record];
+    for (const exercise of exerciseRows) {
+    const name = exercise.title || exercise.name;
     if (name) {
       const current = exercises.get(name) || { name, count: 0, last_date: '' };
       current.count += 1;
       if (recordDate && recordDate > current.last_date) current.last_date = recordDate;
       exercises.set(name, current);
-      const weight = numericWeight(record.weight);
-      const volume = numericVolume(record);
+      const weight = exercise.weight_kg !== undefined ? numeric(exercise.weight_kg) : numericWeight(exercise.weight);
+      const volume = numericVolume(exercise);
       const value = weight > 0 ? weight : volume > 0 ? volume : 0;
       if (recordDate && value > 0) {
         const series = performance.get(name) || { name, values: [] };
@@ -103,6 +105,8 @@ function analyzeTrainingRange(input = {}) {
         performance.set(name, series);
       }
     }
+  }
+
   }
 
   const weekly = [...weeklyMap.values()]
@@ -116,7 +120,7 @@ function analyzeTrainingRange(input = {}) {
   const exercise_frequency = [...exercises.values()].sort((a, b) => b.count - a.count || b.last_date.localeCompare(a.last_date) || a.name.localeCompare(b.name));
   const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date));
   const mainPerformance = [...performance.values()]
-    .sort((a, b) => (exercises.get(b.name)?.count || 0) - (exercises.get(a.name)?.count || 0) || a.name.localeCompare(b.name))[0];
+    .sort((a, b) => (exercises.get(b.name)?.count || 0) - (exercises.get(a.name)?.count || 0) || (exercises.get(b.name)?.last_date || '').localeCompare(exercises.get(a.name)?.last_date || '') || a.name.localeCompare(b.name))[0];
   const exercise_performance = mainPerformance
     ? mainPerformance.values.sort((a, b) => a.label.localeCompare(b.label))
     : [];
